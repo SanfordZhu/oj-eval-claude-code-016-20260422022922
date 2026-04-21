@@ -2,6 +2,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
@@ -10,7 +11,7 @@
 #include <unistd.h>
 
 const int PAGE_SIZE = 4096;
-const int MAX_KEYS = 40;
+const int MAX_KEYS = 50;
 const int KEY_SIZE = 64;
 
 struct NodeHeader {
