@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 const int PAGE_SIZE = 4096;
-const int MAX_KEYS = 40;
+const int MAX_KEYS = 32;
 const int KEY_SIZE = 64;
 
 struct NodeHeader {
@@ -131,7 +131,12 @@ private:
         while (lo <= hi) {
             int mid = (lo + hi) / 2;
             int cmp = key_compare(key, leaf->keys[mid]);
-            if (cmp == 0) return mid;
+            if (cmp == 0) {
+                while (mid > 0 && strcmp(leaf->keys[mid], leaf->keys[mid - 1]) == 0) {
+                    mid--;
+                }
+                return mid;
+            }
             if (cmp < 0) hi = mid - 1;
             else lo = mid + 1;
         }
