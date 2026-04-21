@@ -1,0 +1,6 @@
+CMakeFiles/
+CMakeCache.txt
+bptree.idx
+bptree.dat
+*.idx
+*.dat
