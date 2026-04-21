@@ -2,6 +2,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <set>
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
@@ -451,13 +452,15 @@ int main() {
             std::cin >> key;
             std::vector<int> result = tree.find(key);
             if (result.empty()) {
-                std::cout << "null\n";
+                std::cout << "null
+";
             } else {
                 for (size_t i = 0; i < result.size(); i++) {
                     if (i > 0) std::cout << " ";
                     std::cout << result[i];
                 }
-                std::cout << "\n";
+                std::cout << "
+";
             }
         }
     }
