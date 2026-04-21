@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 const int PAGE_SIZE = 4096;
-const int MAX_KEYS = 40;
+const int MAX_KEYS = 30;
 const int KEY_SIZE = 64;
 
 struct NodeHeader {
@@ -18,7 +18,6 @@ struct NodeHeader {
     uint16_t key_count;
     uint32_t parent;
     uint32_t next;
-    uint32_t overflow;
 };
 
 struct InternalNode {
@@ -31,11 +30,6 @@ struct LeafNode {
     NodeHeader header;
     char keys[MAX_KEYS][KEY_SIZE];
     int32_t values[MAX_KEYS];
-};
-
-struct OverflowNode {
-    NodeHeader header;
-    int32_t values[1];
 };
 
 class BPTree {
@@ -154,17 +148,6 @@ private:
                 return true;
             }
         }
-        if (leaf->header.overflow != 0) {
-            uint32_t ov = leaf->header.overflow;
-            while (ov != 0) {
-                OverflowNode* ov_node = (OverflowNode*)get_node(ov);
-                if (!ov_node) break;
-                if (ov_node->values[0] == value) {
-                    return true;
-                }
-                ov = ov_node->header.next;
-            }
-        }
         return false;
     }
 
@@ -179,17 +162,6 @@ private:
         leaf->header.key_count++;
     }
 
-    void add_to_overflow(LeafNode* leaf, int value) {
-        uint32_t new_ov = alloc_node();
-        OverflowNode* ov_node = (OverflowNode*)get_node(new_ov);
-        if (!ov_node) return;
-        memset(ov_node, 0, PAGE_SIZE);
-        ov_node->header.is_leaf = 1;
-        ov_node->values[0] = value;
-        ov_node->header.next = leaf->header.overflow;
-        leaf->header.overflow = new_ov;
-    }
-
     void split_leaf(uint32_t leaf_idx, LeafNode* leaf, char* split_key, uint32_t* new_leaf_idx) {
         *new_leaf_idx = alloc_node();
         LeafNode* new_leaf = (LeafNode*)get_node(*new_leaf_idx);
@@ -198,7 +170,6 @@ private:
         new_leaf->header.is_leaf = 1;
         new_leaf->header.parent = leaf->header.parent;
         new_leaf->header.next = leaf->header.next;
-        new_leaf->header.overflow = 0;
         leaf->header.next = *new_leaf_idx;
 
         int mid = leaf->header.key_count / 2;
@@ -359,7 +330,6 @@ public:
             leaf->header.key_count = 0;
             leaf->header.parent = 0;
             leaf->header.next = 0;
-            leaf->header.overflow = 0;
             write_header();
         }
 
@@ -368,12 +338,6 @@ public:
         if (!leaf) return;
 
         if (leaf_contains(leaf, key.c_str(), value)) {
-            return;
-        }
-
-        int pos = find_pos_leaf(leaf, key.c_str());
-        if (pos < leaf->header.key_count && strcmp(leaf->keys[pos], key.c_str()) == 0) {
-            add_to_overflow(leaf, value);
             return;
         }
 
@@ -438,25 +402,6 @@ public:
                 return;
             }
         }
-
-        uint32_t prev_ov = 0;
-        uint32_t ov = leaf->header.overflow;
-        while (ov != 0) {
-            OverflowNode* ov_node = (OverflowNode*)get_node(ov);
-            if (!ov_node) break;
-            if (ov_node->values[0] == value) {
-                if (prev_ov == 0) {
-                    leaf->header.overflow = ov_node->header.next;
-                } else {
-                    OverflowNode* prev_node = (OverflowNode*)get_node(prev_ov);
-                    if (prev_node) prev_node->header.next = ov_node->header.next;
-                }
-                free_node(ov);
-                return;
-            }
-            prev_ov = ov;
-            ov = ov_node->header.next;
-        }
     }
 
     std::vector<int> find(const std::string& key) {
@@ -471,14 +416,6 @@ public:
             if (strcmp(leaf->keys[i], key.c_str()) == 0) {
                 result.push_back(leaf->values[i]);
             }
-        }
-
-        uint32_t ov = leaf->header.overflow;
-        while (ov != 0) {
-            OverflowNode* ov_node = (OverflowNode*)get_node(ov);
-            if (!ov_node) break;
-            result.push_back(ov_node->values[0]);
-            ov = ov_node->header.next;
         }
 
         std::sort(result.begin(), result.end());
