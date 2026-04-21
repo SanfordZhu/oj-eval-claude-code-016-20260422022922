@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 const int PAGE_SIZE = 4096;
-const int MAX_KEYS = 32;
+const int MAX_KEYS = 30;
 const int KEY_SIZE = 64;
 
 struct NodeHeader {
@@ -126,33 +126,20 @@ private:
         return strcmp(k1, k2);
     }
 
-    int binary_search_leaf(LeafNode* leaf, const char* key) {
-        int lo = 0, hi = leaf->header.key_count - 1;
-        while (lo <= hi) {
-            int mid = (lo + hi) / 2;
-            int cmp = key_compare(key, leaf->keys[mid]);
-            if (cmp == 0) {
-                while (mid > 0 && strcmp(leaf->keys[mid], leaf->keys[mid - 1]) == 0) {
-                    mid--;
-                }
-                return mid;
-            }
-            if (cmp < 0) hi = mid - 1;
-            else lo = mid + 1;
+    int find_pos_leaf(LeafNode* leaf, const char* key) {
+        int pos = 0;
+        while (pos < leaf->header.key_count && key_compare(key, leaf->keys[pos]) > 0) {
+            pos++;
         }
-        return lo;
+        return pos;
     }
 
-    int binary_search_internal(InternalNode* node, const char* key) {
-        int lo = 0, hi = node->header.key_count - 1;
-        while (lo <= hi) {
-            int mid = (lo + hi) / 2;
-            int cmp = key_compare(key, node->keys[mid]);
-            if (cmp == 0) return mid + 1;
-            if (cmp < 0) hi = mid - 1;
-            else lo = mid + 1;
+    int find_pos_internal(InternalNode* node, const char* key) {
+        int pos = 0;
+        while (pos < node->header.key_count && key_compare(key, node->keys[pos]) >= 0) {
+            pos++;
         }
-        return lo;
+        return pos;
     }
 
     bool leaf_contains(LeafNode* leaf, const char* key, int value) {
@@ -165,7 +152,7 @@ private:
     }
 
     void insert_into_leaf(LeafNode* leaf, const char* key, int value) {
-        int pos = binary_search_leaf(leaf, key);
+        int pos = find_pos_leaf(leaf, key);
         for (int i = leaf->header.key_count; i > pos; i--) {
             strcpy(leaf->keys[i], leaf->keys[i - 1]);
             leaf->values[i] = leaf->values[i - 1];
@@ -202,7 +189,7 @@ private:
     }
 
     void insert_into_internal(InternalNode* node, const char* key, uint32_t child) {
-        int pos = binary_search_internal(node, key);
+        int pos = find_pos_internal(node, key);
         for (int i = node->header.key_count; i > pos; i--) {
             strcpy(node->keys[i], node->keys[i - 1]);
             node->children[i + 1] = node->children[i];
@@ -248,7 +235,7 @@ private:
         }
         temp_children[node->header.key_count] = node->children[node->header.key_count];
 
-        int pos = binary_search_internal(node, new_key);
+        int pos = find_pos_internal(node, new_key);
         for (int i = node->header.key_count; i > pos; i--) {
             strcpy(temp_keys[i], temp_keys[i - 1]);
             temp_children[i + 1] = temp_children[i];
@@ -317,7 +304,7 @@ private:
             if (h->is_leaf) return node;
 
             InternalNode* inode = (InternalNode*)n;
-            int pos = binary_search_internal(inode, key);
+            int pos = find_pos_internal(inode, key);
             node = inode->children[pos];
         }
     }
