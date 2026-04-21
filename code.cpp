@@ -54,7 +54,8 @@ private:
         off_t idx_size = lseek(index_fd, 0, SEEK_END);
 
         if (idx_size == 0) {
-            write(index_fd, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16);
+            char header[16] = {0};
+            write(index_fd, header, 16);
             root = 0;
             free_list = 0;
             node_count = 1;
@@ -86,7 +87,8 @@ private:
     uint32_t alloc_node() {
         if (free_list) {
             uint32_t node = free_list;
-            free_list = *(uint32_t*)((char*)index_map + PAGE_SIZE * (node + 1));
+            char* node_ptr = (char*)index_map + PAGE_SIZE * (node + 1);
+            free_list = *(uint32_t*)node_ptr;
             write_header();
             return node;
         }
@@ -98,12 +100,17 @@ private:
             index_size = (node + 2) * PAGE_SIZE;
             ftruncate(index_fd, index_size);
             index_map = mmap(NULL, index_size, PROT_READ | PROT_WRITE, MAP_SHARED, index_fd, 0);
+            if (index_map == MAP_FAILED) {
+                perror("mmap");
+                exit(1);
+            }
         }
         return node;
     }
 
     void free_node(uint32_t node) {
-        *(uint32_t*)((char*)index_map + PAGE_SIZE * (node + 1)) = free_list;
+        char* node_ptr = (char*)index_map + PAGE_SIZE * (node + 1);
+        *(uint32_t*)node_ptr = free_list;
         free_list = node;
         write_header();
     }
@@ -197,6 +204,19 @@ private:
         node->header.key_count++;
     }
 
+    void update_child_parent(uint32_t node_idx) {
+        void* n = get_node(node_idx);
+        NodeHeader* h = (NodeHeader*)n;
+
+        if (h->is_leaf) return;
+
+        InternalNode* inode = (InternalNode*)n;
+        for (int i = 0; i <= inode->header.key_count; i++) {
+            void* child = get_node(inode->children[i]);
+            ((NodeHeader*)child)->parent = node_idx;
+        }
+    }
+
     void split_internal(uint32_t node_idx, const char* new_key, uint32_t new_child) {
         InternalNode* node = (InternalNode*)get_node(node_idx);
 
@@ -242,14 +262,8 @@ private:
         }
         new_node->children[new_node->header.key_count] = temp_children[MAX_KEYS + 1];
 
-        for (int i = 0; i <= node->header.key_count; i++) {
-            void* child = get_node(node->children[i]);
-            ((NodeHeader*)child)->parent = node_idx;
-        }
-        for (int i = 0; i <= new_node->header.key_count; i++) {
-            void* child = get_node(new_node->children[i]);
-            ((NodeHeader*)child)->parent = new_idx;
-        }
+        update_child_parent(node_idx);
+        update_child_parent(new_idx);
 
         if (node_idx == root) {
             uint32_t new_root = alloc_node();
@@ -270,6 +284,7 @@ private:
             InternalNode* p = (InternalNode*)get_node(parent);
             if (p->header.key_count < MAX_KEYS) {
                 insert_into_internal(p, split_key, new_idx);
+                new_node->header.parent = parent;
             } else {
                 split_internal(parent, split_key, new_idx);
             }
@@ -354,6 +369,7 @@ public:
                 InternalNode* p = (InternalNode*)get_node(parent);
                 if (p->header.key_count < MAX_KEYS) {
                     insert_into_internal(p, split_key, new_leaf_idx);
+                    new_leaf->header.parent = parent;
                 } else {
                     split_internal(parent, split_key, new_leaf_idx);
                 }
