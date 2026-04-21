@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 const int PAGE_SIZE = 4096;
-const int MAX_KEYS = 30;
+const int MAX_KEYS = 40;
 const int KEY_SIZE = 64;
 
 struct NodeHeader {
