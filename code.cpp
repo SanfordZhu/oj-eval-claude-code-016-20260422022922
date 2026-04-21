@@ -10,13 +10,13 @@
 #include <unistd.h>
 
 const int PAGE_SIZE = 4096;
-const int MAX_KEYS = 60;
+const int MAX_KEYS = 50;
 const int KEY_SIZE = 64;
-const int VALUE_SIZE = 4;
 
 struct NodeHeader {
     uint8_t is_leaf;
     uint16_t key_count;
+    uint32_t parent;
 };
 
 struct InternalNode {
@@ -35,7 +35,6 @@ struct LeafNode {
 class BPTree {
 private:
     int index_fd;
-    int data_fd;
     void* index_map;
     size_t index_size;
     uint32_t root;
@@ -43,38 +42,31 @@ private:
     uint32_t node_count;
 
     std::string index_file;
-    std::string data_file;
 
     void init_files() {
         index_fd = open(index_file.c_str(), O_RDWR | O_CREAT, 0644);
-        data_fd = open(data_file.c_str(), O_RDWR | O_CREAT, 0644);
 
-        if (index_fd < 0 || data_fd < 0) {
+        if (index_fd < 0) {
             perror("open");
             exit(1);
         }
 
         off_t idx_size = lseek(index_fd, 0, SEEK_END);
-        off_t data_size = lseek(data_fd, 0, SEEK_END);
 
         if (idx_size == 0) {
-            write(index_fd, "\0\0\0\0\0\0\0\0\0\0\0\0", 12);
+            write(index_fd, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16);
             root = 0;
             free_list = 0;
             node_count = 1;
             index_size = PAGE_SIZE;
         } else {
-            char header[12];
+            char header[16];
             lseek(index_fd, 0, SEEK_SET);
-            read(index_fd, header, 12);
+            read(index_fd, header, 16);
             root = *(uint32_t*)header;
             free_list = *(uint32_t*)(header + 4);
             node_count = *(uint32_t*)(header + 8);
             index_size = idx_size;
-        }
-
-        if (data_size == 0) {
-            write(data_fd, "\0\0\0\0", 4);
         }
 
         index_map = mmap(NULL, index_size, PROT_READ | PROT_WRITE, MAP_SHARED, index_fd, 0);
@@ -124,16 +116,28 @@ private:
         return strcmp(k1, k2);
     }
 
-    void insert_into_leaf(LeafNode* leaf, const char* key, int value) {
-        int i = leaf->header.key_count - 1;
-        while (i >= 0 && key_compare(key, leaf->keys[i]) < 0) {
-            strcpy(leaf->keys[i + 1], leaf->keys[i]);
-            leaf->values[i + 1] = leaf->values[i];
-            i--;
+    int binary_search_leaf(LeafNode* leaf, const char* key) {
+        int lo = 0, hi = leaf->header.key_count - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) / 2;
+            int cmp = key_compare(key, leaf->keys[mid]);
+            if (cmp == 0) return mid;
+            if (cmp < 0) hi = mid - 1;
+            else lo = mid + 1;
         }
-        strcpy(leaf->keys[i + 1], key);
-        leaf->values[i + 1] = value;
-        leaf->header.key_count++;
+        return lo;
+    }
+
+    int binary_search_internal(InternalNode* node, const char* key) {
+        int lo = 0, hi = node->header.key_count - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) / 2;
+            int cmp = key_compare(key, node->keys[mid]);
+            if (cmp == 0) return mid + 1;
+            if (cmp < 0) hi = mid - 1;
+            else lo = mid + 1;
+        }
+        return lo;
     }
 
     bool leaf_contains(LeafNode* leaf, const char* key, int value) {
@@ -145,13 +149,29 @@ private:
         return false;
     }
 
+    void insert_into_leaf(LeafNode* leaf, const char* key, int value) {
+        int pos = binary_search_leaf(leaf, key);
+        for (int i = leaf->header.key_count; i > pos; i--) {
+            strcpy(leaf->keys[i], leaf->keys[i - 1]);
+            leaf->values[i] = leaf->values[i - 1];
+        }
+        strcpy(leaf->keys[pos], key);
+        leaf->values[pos] = value;
+        leaf->header.key_count++;
+    }
+
     void split_leaf(uint32_t leaf_idx, LeafNode* leaf, char* split_key, uint32_t* new_leaf_idx) {
         *new_leaf_idx = alloc_node();
         LeafNode* new_leaf = (LeafNode*)get_node(*new_leaf_idx);
         memset(new_leaf, 0, PAGE_SIZE);
         new_leaf->header.is_leaf = 1;
+        new_leaf->header.parent = leaf->header.parent;
 
         int mid = leaf->header.key_count / 2;
+        while (mid > 0 && strcmp(leaf->keys[mid], leaf->keys[mid - 1]) == 0) {
+            mid--;
+        }
+
         new_leaf->header.key_count = leaf->header.key_count - mid;
         leaf->header.key_count = mid;
 
@@ -166,30 +186,25 @@ private:
         strcpy(split_key, new_leaf->keys[0]);
     }
 
-    void insert_into_parent(uint32_t parent, uint32_t left, const char* key, uint32_t right) {
-        InternalNode* p = (InternalNode*)get_node(parent);
-
-        if (p->header.key_count < MAX_KEYS) {
-            int i = p->header.key_count - 1;
-            while (i >= 0 && key_compare(key, p->keys[i]) < 0) {
-                strcpy(p->keys[i + 1], p->keys[i]);
-                p->children[i + 2] = p->children[i + 1];
-                i--;
-            }
-            strcpy(p->keys[i + 1], key);
-            p->children[i + 2] = right;
-            p->header.key_count++;
-        } else {
-            split_internal(parent, left, key, right);
+    void insert_into_internal(InternalNode* node, const char* key, uint32_t child) {
+        int pos = binary_search_internal(node, key);
+        for (int i = node->header.key_count; i > pos; i--) {
+            strcpy(node->keys[i], node->keys[i - 1]);
+            node->children[i + 1] = node->children[i];
         }
+        strcpy(node->keys[pos], key);
+        node->children[pos + 1] = child;
+        node->header.key_count++;
     }
 
-    void split_internal(uint32_t node_idx, uint32_t left_child, const char* new_key, uint32_t right_child) {
+    void split_internal(uint32_t node_idx, const char* new_key, uint32_t new_child) {
         InternalNode* node = (InternalNode*)get_node(node_idx);
 
         uint32_t new_idx = alloc_node();
         InternalNode* new_node = (InternalNode*)get_node(new_idx);
         memset(new_node, 0, PAGE_SIZE);
+        new_node->header.is_leaf = 0;
+        new_node->header.parent = node->header.parent;
 
         char temp_keys[MAX_KEYS + 1][KEY_SIZE];
         uint32_t temp_children[MAX_KEYS + 2];
@@ -200,18 +215,14 @@ private:
         }
         temp_children[node->header.key_count] = node->children[node->header.key_count];
 
-        int pos = 0;
-        while (pos < node->header.key_count && key_compare(new_key, temp_keys[pos]) >= 0) {
-            pos++;
-        }
-
+        int pos = binary_search_internal(node, new_key);
         for (int i = node->header.key_count; i > pos; i--) {
             strcpy(temp_keys[i], temp_keys[i - 1]);
             temp_children[i + 1] = temp_children[i];
         }
         strcpy(temp_keys[pos], new_key);
-        temp_children[pos] = left_child;
-        temp_children[pos + 1] = right_child;
+        temp_children[pos] = node->children[pos];
+        temp_children[pos + 1] = new_child;
 
         int mid = MAX_KEYS / 2;
         char split_key[KEY_SIZE];
@@ -231,49 +242,38 @@ private:
         }
         new_node->children[new_node->header.key_count] = temp_children[MAX_KEYS + 1];
 
+        for (int i = 0; i <= node->header.key_count; i++) {
+            void* child = get_node(node->children[i]);
+            ((NodeHeader*)child)->parent = node_idx;
+        }
+        for (int i = 0; i <= new_node->header.key_count; i++) {
+            void* child = get_node(new_node->children[i]);
+            ((NodeHeader*)child)->parent = new_idx;
+        }
+
         if (node_idx == root) {
             uint32_t new_root = alloc_node();
             InternalNode* nr = (InternalNode*)get_node(new_root);
             memset(nr, 0, PAGE_SIZE);
             nr->header.is_leaf = 0;
             nr->header.key_count = 1;
+            nr->header.parent = 0;
             strcpy(nr->keys[0], split_key);
             nr->children[0] = node_idx;
             nr->children[1] = new_idx;
+            node->header.parent = new_root;
+            new_node->header.parent = new_root;
             root = new_root;
             write_header();
         } else {
-            uint32_t parent = find_parent(root, node_idx);
-            if (parent != (uint32_t)-1) {
-                insert_into_parent(parent, node_idx, split_key, new_idx);
+            uint32_t parent = node->header.parent;
+            InternalNode* p = (InternalNode*)get_node(parent);
+            if (p->header.key_count < MAX_KEYS) {
+                insert_into_internal(p, split_key, new_idx);
+            } else {
+                split_internal(parent, split_key, new_idx);
             }
         }
-    }
-
-    uint32_t find_parent(uint32_t current, uint32_t target) {
-        void* node = get_node(current);
-        NodeHeader* h = (NodeHeader*)node;
-
-        if (h->is_leaf) {
-            return (uint32_t)-1;
-        }
-
-        InternalNode* inode = (InternalNode*)node;
-        for (int i = 0; i <= inode->header.key_count; i++) {
-            if (inode->children[i] == target) {
-                return current;
-            }
-            if (i < inode->header.key_count) {
-                uint32_t child = inode->children[i];
-                void* child_node = get_node(child);
-                NodeHeader* ch = (NodeHeader*)child_node;
-                if (!ch->is_leaf) {
-                    uint32_t res = find_parent(child, target);
-                    if (res != (uint32_t)-1) return res;
-                }
-            }
-        }
-        return (uint32_t)-1;
     }
 
     uint32_t find_leaf(const char* key) {
@@ -286,24 +286,20 @@ private:
             if (h->is_leaf) return node;
 
             InternalNode* inode = (InternalNode*)n;
-            int i = 0;
-            while (i < inode->header.key_count && key_compare(key, inode->keys[i]) >= 0) {
-                i++;
-            }
-            node = inode->children[i];
+            int pos = binary_search_internal(inode, key);
+            node = inode->children[pos];
         }
     }
 
 public:
-    BPTree(const std::string& idx_file, const std::string& dat_file)
-        : index_file(idx_file), data_file(dat_file) {
+    BPTree(const std::string& idx_file)
+        : index_file(idx_file) {
         init_files();
     }
 
     ~BPTree() {
         if (index_map) munmap(index_map, index_size);
         if (index_fd >= 0) close(index_fd);
-        if (data_fd >= 0) close(data_fd);
     }
 
     void insert(const std::string& key, int value) {
@@ -313,6 +309,7 @@ public:
             memset(leaf, 0, PAGE_SIZE);
             leaf->header.is_leaf = 1;
             leaf->header.key_count = 0;
+            leaf->header.parent = 0;
             leaf->next = 0;
             write_header();
         }
@@ -344,15 +341,21 @@ public:
                 memset(nr, 0, PAGE_SIZE);
                 nr->header.is_leaf = 0;
                 nr->header.key_count = 1;
+                nr->header.parent = 0;
                 strcpy(nr->keys[0], split_key);
                 nr->children[0] = leaf_idx;
                 nr->children[1] = new_leaf_idx;
+                leaf->header.parent = new_root;
+                new_leaf->header.parent = new_root;
                 root = new_root;
                 write_header();
             } else {
-                uint32_t parent = find_parent(root, leaf_idx);
-                if (parent != (uint32_t)-1) {
-                    insert_into_parent(parent, leaf_idx, split_key, new_leaf_idx);
+                uint32_t parent = leaf->header.parent;
+                InternalNode* p = (InternalNode*)get_node(parent);
+                if (p->header.key_count < MAX_KEYS) {
+                    insert_into_internal(p, split_key, new_leaf_idx);
+                } else {
+                    split_internal(parent, split_key, new_leaf_idx);
                 }
             }
         }
@@ -403,7 +406,7 @@ int main() {
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
 
-    BPTree tree("bptree.idx", "bptree.dat");
+    BPTree tree("bptree.idx");
 
     int n;
     std::cin >> n;
